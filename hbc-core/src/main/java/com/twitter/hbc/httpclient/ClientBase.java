@@ -69,6 +69,7 @@ class ClientBase implements Runnable {
 
   private final AtomicBoolean connectionEstablished;
   private final AtomicBoolean reconnect;
+  private Connection conn;
 
   ClientBase(String name, HttpClient client, Hosts hosts, StreamingEndpoint endpoint, Authentication auth,
              HosebirdMessageProcessor processor, ReconnectionManager manager, RateTracker rateTracker) {
@@ -137,7 +138,7 @@ class ClientBase implements Runnable {
             postContent = endpoint.getPostParamString();
           }
           auth.signRequest(request, postContent);
-          Connection conn = new Connection(client, processor);
+          conn = new Connection(client, processor);
           StatusLine status = establishConnection(conn, request);
           if (handleConnectionResult(status)) {
             rateTracker.resume();
@@ -303,6 +304,11 @@ class ClientBase implements Runnable {
       }
       if (!waitForFinish(waitMillis)) {
         logger.warn("{} Client thread failed to finish in {} millis", name, waitMillis);
+        if (conn != null) {
+          // This a workaround for https://github.com/twitter/hbc/issues/141
+          logger.warn("HACK: assuming the processor for {} is blocked on inputstream.read(), closing the conn to unblock!", name);
+          conn.close(); // Force the inputstream reader into an IOException so it hits the stop condition in ClientBase.
+        }
       }
     } finally {
       rateTracker.shutdown();
