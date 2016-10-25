@@ -272,6 +272,7 @@ class ClientBase implements Runnable {
       // we can't really diagnosis the actual disconnection reason without parsing (looking at disconnect message)
       // but we can make a good guess at when we're stalling. TODO
       logger.info("{} Disconnected during processing: {} - will reconnect (lin back-off)", name, ex.getMessage());
+      logger.error(name + " Disconnected: ", ex);
       statsReporter.incrNumDisconnects();
       addEvent(new Event(EventType.DISCONNECTED, ex));
       reconnectionManager.handleLinearBackoff();
