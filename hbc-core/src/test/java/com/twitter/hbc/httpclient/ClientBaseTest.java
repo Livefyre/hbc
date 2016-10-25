@@ -92,7 +92,7 @@ public class ClientBaseTest {
 
     InOrder inOrder = inOrder(mockStatusLine, mockReconnectionManager);
     inOrder.verify(mockStatusLine).getStatusCode();
-    inOrder.verify(mockReconnectionManager).resetCounts();
+    //inOrder.verify(mockReconnectionManager).resetCounts();
 
     assertFalse(clientBase.isDone());
   }
@@ -123,7 +123,7 @@ public class ClientBaseTest {
             mock, new HttpHosts("http://hi"), new RawEndpoint("/endpoint", HttpConstants.HTTP_GET), mockAuth,
             mockProcessor, mockReconnectionManager, mockRateTracker
     );
-
+    clientBase.conn = mock(Connection.class);
     when(mockStatusLine.getStatusCode())
             .thenReturn(401);
     when(mockStatusLine.getReasonPhrase())
@@ -139,6 +139,7 @@ public class ClientBaseTest {
     clientBase.handleConnectionResult(mockStatusLine);
     verify(mockReconnectionManager, times(2)).handleExponentialBackoff();
     assertTrue(clientBase.isDone());
+    verify(clientBase.conn, times(3)).close();
   }
 
   @Test
@@ -147,11 +148,13 @@ public class ClientBaseTest {
             mock, new HttpHosts("http://hi"), new RawEndpoint("/endpoint", HttpConstants.HTTP_GET), mockAuth,
             mockProcessor, mockReconnectionManager, mockRateTracker
     );
+    clientBase.conn = mock(Connection.class);
     when(mockStatusLine.getStatusCode())
             .thenReturn(404);
     when(mockStatusLine.getReasonPhrase())
             .thenReturn("reason");
     clientBase.handleConnectionResult(mockStatusLine);
+    verify(clientBase.conn).close();
     assertTrue(clientBase.isDone());
   }
 
@@ -161,6 +164,7 @@ public class ClientBaseTest {
             mock, new HttpHosts("http://hi"), new RawEndpoint("/endpoint", HttpConstants.HTTP_GET), mockAuth,
             mockProcessor, mockReconnectionManager, mockRateTracker
     );
+    clientBase.conn = mock(Connection.class);
     when(mockStatusLine.getStatusCode())
             .thenReturn(503);
 
@@ -169,6 +173,7 @@ public class ClientBaseTest {
     clientBase.handleConnectionResult(mockStatusLine);
     clientBase.handleConnectionResult(mockStatusLine);
 
+    verify(clientBase.conn, times(4)).close();
     verify(mockReconnectionManager, times(4)).handleExponentialBackoff();
     assertFalse(clientBase.isDone());
   }

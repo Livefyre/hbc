@@ -22,11 +22,13 @@ import com.twitter.hbc.core.Constants;
  */
 public class BasicReconnectionManager implements ReconnectionManager {
 
-  public static final int INITIAL_EXPONENTIAL_BACKOFF_MILLIS = 5000;
-  public static final int INITIAL_LINEAR_BACKOFF_MILLIS = 250;
+  // The min/max are good for regular HTTP errors but not sufficient for HTTP 420, so we increased them here!
+  // Should be at least 1 minute for 420 according to https://dev.twitter.com/streaming/overview/connecting
+  public static final int INITIAL_EXPONENTIAL_BACKOFF_MILLIS = 120_000;
+  public static final int MAX_EXPONENTIAL_BACKOFF_MILLIS = 1200_000;
 
-  public static final int MAX_LINEAR_BACKOFF_MILLIS = 16000;
-  public static final int MAX_EXPONENTIAL_BACKOFF_MILLIS = 320000;
+  public static final int INITIAL_LINEAR_BACKOFF_MILLIS = 5_000;
+  public static final int MAX_LINEAR_BACKOFF_MILLIS = 50_000;
 
   private final int maxRetries;
 

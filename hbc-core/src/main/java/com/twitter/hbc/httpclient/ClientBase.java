@@ -69,7 +69,7 @@ class ClientBase implements Runnable {
 
   private final AtomicBoolean connectionEstablished;
   private final AtomicBoolean reconnect;
-  private Connection conn;
+  @VisibleForTesting Connection conn;
 
   ClientBase(String name, HttpClient client, Hosts hosts, StreamingEndpoint endpoint, Authentication auth,
              HosebirdMessageProcessor processor, ReconnectionManager manager, RateTracker rateTracker) {
@@ -141,12 +141,8 @@ class ClientBase implements Runnable {
           conn = new Connection(client, processor);
           StatusLine status = establishConnection(conn, request);
           if (handleConnectionResult(status)) {
-            rateTracker.resume();
             processConnectionData(conn);
-            rateTracker.pause();
           }
-          logger.info("{} Done processing, preparing to close connection", name);
-          conn.close();
         } else {
           addEvent(
             new Event(
@@ -199,39 +195,42 @@ class ClientBase implements Runnable {
   boolean handleConnectionResult(@Nullable StatusLine statusLine) {
     statsReporter.incrNumConnects();
     if (statusLine == null) {
-      logger.warn("{} failed to establish connection properly", name);
+      logger.warn("{} failed to establish connection properly, closing connection", name);
       addEvent(new Event(EventType.CONNECTION_ERROR, "Failed to establish connection properly"));
+      conn.close();
       return false;
     }
     int statusCode = statusLine.getStatusCode();
     if (statusCode == HttpConstants.Codes.SUCCESS) {
-      logger.debug("{} Connection successfully established", name);
+      logger.warn("{} Connection successfully established", name);
       statsReporter.incrNum200s();
       connectionEstablished.set(true);
       addEvent(new HttpResponseEvent(EventType.CONNECTED, statusLine));
-      reconnectionManager.resetCounts();
       return true;
     }
-
-    logger.warn(name + " Error connecting w/ status code - {}, reason - {}", statusCode, statusLine.getReasonPhrase());
+    logger.warn(name + " Error connecting w/ status code - {} - closing connection, reason - {}", statusCode, statusLine.getReasonPhrase());
+    conn.close();
     statsReporter.incrNumConnectionFailures();
     addEvent(new HttpResponseEvent(EventType.HTTP_ERROR, statusLine));
     if (HttpConstants.FATAL_CODES.contains(statusCode)) {
+      logger.warn("{} Fatal error code {} - stopping", name, statusCode);
       setExitStatus(new Event(EventType.STOPPED_BY_ERROR, "Fatal error code: " + statusCode));
     } else if (statusCode < 500 && statusCode >= 400) {
       statsReporter.incrNum400s();
       // we will retry these a set number of times, then fail
       if (reconnectionManager.shouldReconnectOn400s()) {
-        logger.debug("{} Reconnecting on {}", name, statusCode);
+        logger.warn("{} Reconnecting on {} (exp back-off)", name, statusCode);
         reconnectionManager.handleExponentialBackoff();
       } else {
-        logger.debug("{} Reconnecting retries exhausted for {}", name, statusCode);
+        logger.warn("{} Reconnecting retries exhausted for {}", name, statusCode);
         setExitStatus(new Event(EventType.STOPPED_BY_ERROR, "Retries exhausted"));
       }
     } else if (statusCode >= 500) {
       statsReporter.incrNum500s();
+      logger.warn("{} Reconnecting on {} (exp back-off)", name, statusCode);
       reconnectionManager.handleExponentialBackoff();
     } else {
+      logger.warn("{} Stopped by error {} - {}", name, new String[] {Integer.toString(statusCode), statusLine.getReasonPhrase()});
       setExitStatus(new Event(EventType.STOPPED_BY_ERROR, statusLine.getReasonPhrase()));
     }
     return false;
@@ -241,25 +240,41 @@ class ClientBase implements Runnable {
     logger.info("{} Processing connection data", name);
     try {
       addEvent(new Event(EventType.PROCESSING, "Processing messages"));
-      while(!isDone() && !reconnect.getAndSet(false)) {
-        if (conn.processResponse()) {
-          statsReporter.incrNumMessages();
-        } else {
-          statsReporter.incrNumMessagesDropped();
+      try {
+        rateTracker.resume();
+        long count = 0;
+        while (!isDone() && !reconnect.getAndSet(false)) {
+          if (conn.processResponse()) {
+            statsReporter.incrNumMessages();
+          } else {
+            statsReporter.incrNumMessagesDropped();
+          }
+          if (count < 50) {
+            count++;
+            if (count == 50) {
+              reconnectionManager.resetCounts();
+            }
+          }
+          rateTracker.eventObserved();
         }
-        rateTracker.eventObserved();
+      } finally {
+        rateTracker.pause();
+        logger.info("{} Done processing, preparing to close connection", name);
+        conn.close();
       }
     } catch (RuntimeException e) {
       logger.warn(name + " Unknown error processing connection: ", e);
       statsReporter.incrNumDisconnects();
       addEvent(new Event(EventType.DISCONNECTED, e));
+      reconnectionManager.handleExponentialBackoff();
     } catch (IOException ex) {
       // connection issue? whatever. let's try connecting again
       // we can't really diagnosis the actual disconnection reason without parsing (looking at disconnect message)
       // but we can make a good guess at when we're stalling. TODO
-      logger.info("{} Disconnected during processing - will reconnect", name);
+      logger.info("{} Disconnected during processing: {} - will reconnect (lin back-off)", name, ex.getMessage());
       statsReporter.incrNumDisconnects();
       addEvent(new Event(EventType.DISCONNECTED, ex));
+      reconnectionManager.handleLinearBackoff();
     } catch (InterruptedException interrupt) {
       // interrupted while trying to append message to queue. exit
       logger.info("{} Thread interrupted during processing, exiting", name);
